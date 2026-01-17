@@ -1,105 +1,65 @@
-## 1. Initial Source
-# Source cachyos-fish-config (ensure path exists to avoid errors)
-if test -f /usr/share/cachyos-fish-config/conf.d/done.fish
-    source /usr/share/cachyos-fish-config/conf.d/done.fish
-end
+## 1. Path Optimization (Portable)
+# fish_add_path is idempotent and handles existence checks internally.
+# Using '~' ensures it expands to the home directory of the current user.
+fish_add_path -m ~/.local/bin ~/Applications/depot_tools ~/Develop/flutter/bin
 
-## 2. Global Settings
-# Use global (-g) instead of universal (-U) for static config to reduce I/O
-set -g __done_min_cmd_duration 10000
-set -g __done_notification_urgency_level low
+## 2. Tool-Call Hardening (Anti-Stall)
+# Prevents CLI tools from hanging on interactive prompts during AI calls.
+set -gx FLUTTER_NO_ANALYTICS 1
+set -gx PUB_ENVIRONMENT flutter_cli:fish_ai
 
-# Environment Variables
-set -gx MANROFFOPT "-c"
-set -gx MANPAGER "sh -c 'col -bx | bat -l man -p'"
-
-# Welcome Message
-function fish_greeting
-    fastfetch
-end
-
-## 3. Path Management
-# Using a loop to keep the config DRY (Don't Repeat Yourself)
-for bin_path in ~/.local/bin ~/Applications/depot_tools
-    if test -d $bin_path
-        if not contains -- $bin_path $PATH
-            set -p PATH $bin_path
+# Dynamic Chrome/Browser detection for Flutter web/testing
+if test -z "$CHROME_EXECUTABLE"
+    for browser in google-chrome-stable google-chrome chromium brave-bin brave
+        if type -q $browser
+            set -gx CHROME_EXECUTABLE (type -p $browser)
+            break
         end
     end
 end
 
-## 4. Enhanced Functions
-# History expansion (!! and !$)
-function __history_previous_command
-    switch (commandline -t)
-        case "!"
-            commandline -t $history[1]; commandline -f repaint
-        case "*"
-            commandline -i !
-    end
+## 3. Global Environment & Pager
+# Using -gx (Global Export) keeps these in memory rather than writing to disk.
+set -gx MANROFFOPT "-c"
+if type -q bat
+    set -gx MANPAGER "sh -c 'col -bx | bat -l man -p'"
 end
 
-function __history_previous_command_arguments
-    switch (commandline -t)
-        case "!"
-            commandline -t ""
-            commandline -f history-token-search-backward
-        case "*"
-            commandline -i '$'
-    end
-end
+# Optimization for 'done' plugin (CachyOS Default)
+set -g __done_min_cmd_duration 10000
+set -g __done_notification_urgency_level low
 
-# Keybindings
-if [ "$fish_key_bindings" = fish_vi_key_bindings ]
-    bind -Minsert ! __history_previous_command
-    bind -Minsert '$' __history_previous_command_arguments
-else
-    bind ! __history_previous_command
-    bind '$' __history_previous_command_arguments
-end
-
-# Optimized Backup
-function backup --argument filename
-    cp -v $filename $filename.(date +%Y%m%d_%H%M%S).bak
-end
-
-# Optimized Copy with string manipulation
-function copy
-    set -l count (count $argv)
-    if test "$count" -eq 2; and test -d "$argv[1]"
-        set -l from (string trim -r -c / $argv[1])
-        set -l to $argv[2]
-        command cp -r $from $to
-    else
-        command cp $argv
-    end
-end
-
-## 5. Abbreviations & Aliases
-# Abbreviations expand upon pressing 'Space', preventing AI stalling
-# and ensuring the real command is recorded in history.
-
-# Search & File logic (The "Anti-Stall" fix)
-abbr -a grep 'grep --color=auto'
-abbr -a find 'find'
-
-# Modern Replacements
-alias ls='eza -al --color=always --group-directories-first --icons'
-alias la='eza -a --color=always --group-directories-first --icons'
-alias ll='eza -l --color=always --group-directories-first --icons'
-alias lt='eza -aT --color=always --group-directories-first --icons'
+## 4. High-Speed Abbreviations (Universal)
+# These replace the function-lookup overhead of 'alias'
 
 # Navigation
 abbr -a .. 'cd ..'
 abbr -a ... 'cd ../..'
 abbr -a .... 'cd ../../..'
 
-# Maintenance & System
+# Modern Replacements (eza)
+if type -q eza
+    abbr -a ls 'eza -al --color=always --group-directories-first --icons'
+    abbr -a la 'eza -a --color=always --group-directories-first --icons'
+    abbr -a ll 'eza -l --color=always --group-directories-first --icons'
+    abbr -a lt 'eza -aT --color=always --group-directories-first --icons'
+end
+
+# Development (Flutter)
+if type -q flutter
+    abbr -a fld 'flutter doctor'
+    abbr -a flr 'flutter run'
+    abbr -a flg 'flutter pub get'
+    abbr -a flc 'flutter clean'
+end
+
+# System Management (Arch/CachyOS)
 abbr -a update 'sudo pacman -Syu'
 abbr -a grubup 'sudo grub-mkconfig -o /boot/grub/grub.cfg'
 abbr -a fixpacman 'sudo rm /var/lib/pacman/db.lck'
+[ -f /usr/bin/cachyos-rate-mirrors ] && abbr -a mirror 'sudo cachyos-rate-mirrors'
 
-# Conditional Cleanup (Safety fix)
+# Cleanup Logic (Hardened against empty arguments)
 function cleanup
     set -l orphans (pacman -Qtdq)
     if test -n "$orphans"
@@ -109,17 +69,67 @@ function cleanup
     end
 end
 
-# Hardware & Monitoring
-alias psmem='ps auxf | sort -nr -k 4'
-alias hinfo='hwinfo --short'
-alias jctl="journalctl -p 3 -xb"
+# Search (The Anti-Stall Fix)
+abbr -a grep 'grep --color=auto'
+abbr -a jctl 'journalctl -p 3 -xb'
 
-# Package analysis
-alias big="expac -H M '%m\t%n' | sort -h | nl"
-alias rip="expac --timefmt='%Y-%m-%d %T' '%l\t%n %v' | sort | tail -200 | nl"
-
-## 6. Shell Integration
-# Apply .profile if it exists
-if test -f ~/.fish_profile
-    source ~/.fish_profile
+## 5. Optimized Native Functions (Zero-Fork)
+# Uses Fish-native C++ string manipulation to avoid subshells.
+function copy
+    if test (count $argv) -eq 2; and test -d "$argv[1]"
+        command cp -r (string trim -r -c / $argv[1]) $argv[2]
+    else
+        command cp $argv
+    end
 end
+
+function backup --argument filename
+    cp -v $filename $filename.(date +%Y%m%d_%H%M%S).bak
+end
+
+## 6. Interactive-Only Features
+# Ensures non-interactive scripts/AI calls don't load heavy UI elements.
+if status is-interactive
+
+    # Static or Fastfetch Greeting
+    function fish_greeting
+        if type -q fastfetch
+            fastfetch
+        else
+            echo -e (set_color blue)"Welcome to Fish "(set_color yellow)(fish --version)(set_color normal)
+        end
+    end
+
+    # Bang-Bang History Expansion (!! and !$)
+    function __history_previous_command
+        switch (commandline -t)
+            case "!"
+                commandline -t $history[1]; commandline -f repaint
+            case "*"
+                commandline -i !
+        end
+    end
+
+    function __history_previous_command_arguments
+        switch (commandline -t)
+            case "!"
+                commandline -t ""
+                commandline -f history-token-search-backward
+            case "*"
+                commandline -i '$'
+        end
+    end
+
+    # Bindings (Supports both Default and Vi-mode)
+    bind ! __history_previous_command
+    bind '$' __history_previous_command_arguments
+    if [ "$fish_key_bindings" = fish_vi_key_bindings ]
+        bind -Minsert ! __history_previous_command
+        bind -Minsert '$' __history_previous_command_arguments
+    end
+end
+
+## 7. Plugin & Profile Sourcing
+# Checks file existence before sourcing to prevent startup errors.
+[ -f /usr/share/cachyos-fish-config/conf.d/done.fish ] && source /usr/share/cachyos-fish-config/conf.d/done.fish
+[ -f ~/.fish_profile ] && source ~/.fish_profile
